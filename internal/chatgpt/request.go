@@ -10,6 +10,7 @@ import (
 	"freechatgpt/typings"
 	chatgpt_types "freechatgpt/typings/chatgpt"
 	"io"
+	"fmt"
 	"math"
 	"math/rand"
 	"mime/multipart"
@@ -380,169 +381,244 @@ func GetImageSource(wg *sync.WaitGroup, url string, prompt string, secret *token
 }
 
 func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, proxy string, deviceId string, uuid string, stream bool) (string, *ContinueInfo) {
-	max_tokens := false
+    max_tokens := false
 
-	// Create a bufio.Reader from the response body
-	reader := bufio.NewReader(response.Body)
+    // Create a bufio.Reader from the response body
+    reader := bufio.NewReader(response.Body)
 
-	// Read the response byte by byte until a newline character is encountered
-	if stream {
-		// Response content type is text/event-stream
-		c.Header("Content-Type", "text/event-stream")
-	} else {
-		// Response content type is application/json
-		c.Header("Content-Type", "application/json")
-	}
-	var finish_reason string
-	var previous_text typings.StringStruct
-	var original_response chatgpt_types.ChatGPTResponse
-	var isRole = true
-	var imgSource []string
-	var convId string
-	var msgId string
+    // Read the response byte by byte until a newline character is encountered
+    if stream {
+        // Response content type is text/event-stream
+        c.Header("Content-Type", "text/event-stream")
+    } else {
+        // Response content type is application/json
+        c.Header("Content-Type", "application/json")
+    }
+    var finish_reason string
+    var previous_text typings.StringStruct
+    var original_response chatgpt_types.ChatGPTResponse
+    var isRole = true
+    var imgSource []string
+    var convId string
+    var msgId string
 
-	for {
-		var line string
-		var err error
-		line, err = reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return "", nil
-		}
-		if len(line) < 6 {
-			continue
-		}
-		// Remove "data: " from the beginning of the line
-		line = line[6:]
-		// Check if line starts with [DONE]
-		if !strings.HasPrefix(line, "[DONE]") {
-			// Parse the line as JSON
-			original_response.Message.ID = ""
-			err = json.Unmarshal([]byte(line), &original_response)
-			if err != nil {
-				continue
-			}
-			if original_response.Error != nil {
-				c.JSON(500, gin.H{"error": original_response.Error})
-				return "", nil
-			}
-			if original_response.Message.ID == "" {
-				continue
-			}
-			if original_response.ConversationID != convId {
-				if convId == "" {
-					convId = original_response.ConversationID
-				} else {
-					continue
-				}
-			}
-			if !(original_response.Message.Author.Role == "assistant" || (original_response.Message.Author.Role == "tool" && original_response.Message.Content.ContentType != "text")) || original_response.Message.Content.Parts == nil {
-				continue
-			}
-			if original_response.Message.Metadata.MessageType == "" || original_response.Message.Recipient != "all" {
-				continue
-			}
-			if original_response.Message.Metadata.MessageType != "next" && original_response.Message.Metadata.MessageType != "continue" || !strings.HasSuffix(original_response.Message.Content.ContentType, "text") {
-				continue
-			}
-			if original_response.Message.Content.ContentType == "text" && original_response.Message.ID != msgId {
-				if msgId == "" && original_response.Message.Content.Parts[0].(string) == "" {
-					msgId = original_response.Message.ID
-				} else {
-					continue
-				}
-			}
-			if original_response.Message.EndTurn != nil && !original_response.Message.EndTurn.(bool) {
-				msgId = ""
-			}
-			if len(original_response.Message.Metadata.Citations) != 0 {
-				r := []rune(original_response.Message.Content.Parts[0].(string))
-				offset := 0
-				for _, citation := range original_response.Message.Metadata.Citations {
-					rl := len(r)
-					u, _ := url.Parse(citation.Metadata.URL)
-					baseURL := u.Scheme + "://" + u.Host + "/"
-					attr := urlAttrMap[baseURL]
-					if attr == "" {
-						attr = getURLAttribution(secret, deviceId, baseURL)
-						if attr != "" {
-							urlAttrMap[baseURL] = attr
-						}
-					}
-					u.Fragment = ""
-					original_response.Message.Content.Parts[0] = string(r[:citation.StartIx+offset]) + " ([" + attr + "](" + u.String() + " \"" + citation.Metadata.Title + "\"))" + string(r[citation.EndIx+offset:])
-					r = []rune(original_response.Message.Content.Parts[0].(string))
-					offset += len(r) - rl
-				}
-			}
-			response_string := ""
-			if original_response.Message.Content.ContentType == "multimodal_text" {
-				apiUrl := "https://chatgpt.com/backend-api/files/"
-				if FILES_REVERSE_PROXY != "" {
-					apiUrl = FILES_REVERSE_PROXY
-				}
-				imgSource = make([]string, len(original_response.Message.Content.Parts))
-				var wg sync.WaitGroup
-				for index, part := range original_response.Message.Content.Parts {
-					jsonItem, _ := json.Marshal(part)
-					var dalle_content chatgpt_types.DalleContent
-					err = json.Unmarshal(jsonItem, &dalle_content)
-					if err != nil {
-						continue
-					}
-					url := apiUrl + strings.Split(dalle_content.AssetPointer, "//")[1] + "/download"
-					wg.Add(1)
-					go GetImageSource(&wg, url, dalle_content.Metadata.Dalle.Prompt, secret, deviceId, index, imgSource)
-				}
-				wg.Wait()
-				translated_response := official_types.NewChatCompletionChunk(strings.Join(imgSource, "") + "\n")
-				if isRole {
-					translated_response.Choices[0].Delta.Role = original_response.Message.Author.Role
-				}
-				response_string = "data: " + translated_response.String() + "\n\n"
-			}
-			if response_string == "" {
-				response_string = chatgpt_response_converter.ConvertToString(&original_response, &previous_text, isRole)
-			}
-			if isRole && response_string != "" {
-				isRole = false
-			}
-			if stream && response_string != "" {
-				_, err = c.Writer.WriteString(response_string)
-				if err != nil {
-					return "", nil
-				}
-			}
-			// Flush the response writer buffer to ensure that the client receives each line as it's written
-			c.Writer.Flush()
+    var debugOutput strings.Builder
 
-			if original_response.Message.Metadata.FinishDetails != nil {
-				if original_response.Message.Metadata.FinishDetails.Type == "max_tokens" {
-					max_tokens = true
-				}
-				finish_reason = original_response.Message.Metadata.FinishDetails.Type
-			}
-		} else {
-			if stream {
-				final_line := official_types.StopChunk(finish_reason)
-				c.Writer.WriteString("data: " + final_line.String() + "\n\n")
-			}
-		}
-	}
-	respText := strings.Join(imgSource, "")
-	if respText != "" {
-		respText += "\n"
-	}
-	respText += previous_text.Text
-	if !max_tokens {
-		return respText, nil
-	}
-	return respText, &ContinueInfo{
-		ConversationID: original_response.ConversationID,
-		ParentID:       original_response.Message.ID,
-	}
+    for {
+        var line string
+        var err error
+        line, err = reader.ReadString('\n')
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return "", nil
+        }
+
+        // Debug output
+        debugOutput.WriteString("Line: " + line + "\n")
+
+        if len(line) < 6 {
+            continue
+        }
+        // Remove "data: " from the beginning of the line
+        line = line[6:]
+        // Check if line starts with [DONE]
+        if !strings.HasPrefix(line, "[DONE]") {
+            // Parse the line as JSON
+            original_response.Message.ID = ""
+            err = json.Unmarshal([]byte(line), &original_response)
+            if err != nil {
+                debugOutput.WriteString("JSON error: " + err.Error() + "\n")
+                continue
+            }
+            if original_response.Error != nil {
+                debugOutput.WriteString("Response error: " + fmt.Sprintf("%v", original_response.Error) + "\n")
+                c.JSON(500, gin.H{"error": original_response.Error})
+                return "", nil
+            }
+            if original_response.Message.ID == "" {
+                continue
+            }
+
+            // More lenient handling of conversation ID for o1-pro model
+            if original_response.ConversationID != convId {
+                if convId == "" {
+                    convId = original_response.ConversationID
+                } else {
+                    // For o1-pro, allow multiple conversation IDs
+                    if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+                        // Accept the new conversation ID
+                        convId = original_response.ConversationID
+                    } else {
+                        continue
+                    }
+                }
+            }
+
+            // More lenient role checking for o1-pro
+            validRole := original_response.Message.Author.Role == "assistant" ||
+                         (original_response.Message.Author.Role == "tool" && original_response.Message.Content.ContentType != "text")
+
+            if !validRole || original_response.Message.Content.Parts == nil {
+                // Special case for o1-pro model: it might use different roles
+                if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+                    // Accept this message even with an unexpected role
+                } else {
+                    continue
+                }
+            }
+
+            // Metadata checks
+            if original_response.Message.Metadata.MessageType == "" || original_response.Message.Recipient != "all" {
+                // For o1-pro, be more permissive with metadata
+                if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+                    // Accept this message even with missing or different metadata
+                } else {
+                    continue
+                }
+            }
+
+            // Content type checking
+            validMessageType := original_response.Message.Metadata.MessageType == "next" ||
+                               original_response.Message.Metadata.MessageType == "continue"
+
+            validContentType := strings.HasSuffix(original_response.Message.Content.ContentType, "text")
+
+            if !validMessageType || !validContentType {
+                // For o1-pro, be more permissive with message and content types
+                if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+                    // Accept this message even with different message/content types
+                } else {
+                    continue
+                }
+            }
+
+            // Message ID checking
+            if original_response.Message.Content.ContentType == "text" && original_response.Message.ID != msgId {
+                // More permissive for o1-pro model
+                if msgId == "" || original_response.Message.Metadata.ModelSlug == "o1-pro" {
+                    msgId = original_response.Message.ID
+                } else if original_response.Message.Content.Parts[0].(string) == "" {
+                    msgId = original_response.Message.ID
+                } else {
+                    continue
+                }
+            }
+
+            if original_response.Message.EndTurn != nil && !original_response.Message.EndTurn.(bool) {
+                msgId = ""
+            }
+
+            if len(original_response.Message.Metadata.Citations) != 0 {
+                r := []rune(original_response.Message.Content.Parts[0].(string))
+                offset := 0
+                for _, citation := range original_response.Message.Metadata.Citations {
+                    rl := len(r)
+                    u, _ := url.Parse(citation.Metadata.URL)
+                    baseURL := u.Scheme + "://" + u.Host + "/"
+                    attr := urlAttrMap[baseURL]
+                    if attr == "" {
+                        attr = getURLAttribution(secret, deviceId, baseURL)
+                        if attr != "" {
+                            urlAttrMap[baseURL] = attr
+                        }
+                    }
+                    u.Fragment = ""
+                    original_response.Message.Content.Parts[0] = string(r[:citation.StartIx+offset]) + " ([" + attr + "](" + u.String() + " \"" + citation.Metadata.Title + "\"))" + string(r[citation.EndIx+offset:])
+                    r = []rune(original_response.Message.Content.Parts[0].(string))
+                    offset += len(r) - rl
+                }
+            }
+            response_string := ""
+            if original_response.Message.Content.ContentType == "multimodal_text" {
+                apiUrl := "https://chatgpt.com/backend-api/files/"
+                if FILES_REVERSE_PROXY != "" {
+                    apiUrl = FILES_REVERSE_PROXY
+                }
+                imgSource = make([]string, len(original_response.Message.Content.Parts))
+                var wg sync.WaitGroup
+                for index, part := range original_response.Message.Content.Parts {
+                    jsonItem, _ := json.Marshal(part)
+                    var dalle_content chatgpt_types.DalleContent
+                    err = json.Unmarshal(jsonItem, &dalle_content)
+                    if err != nil {
+                        continue
+                    }
+                    url := apiUrl + strings.Split(dalle_content.AssetPointer, "//")[1] + "/download"
+                    wg.Add(1)
+                    go GetImageSource(&wg, url, dalle_content.Metadata.Dalle.Prompt, secret, deviceId, index, imgSource)
+                }
+                wg.Wait()
+                translated_response := official_types.NewChatCompletionChunk(strings.Join(imgSource, "") + "\n")
+                if isRole {
+                    translated_response.Choices[0].Delta.Role = original_response.Message.Author.Role
+                }
+                response_string = "data: " + translated_response.String() + "\n\n"
+            }
+            if response_string == "" {
+                response_string = chatgpt_response_converter.ConvertToString(&original_response, &previous_text, isRole)
+            }
+            if isRole && response_string != "" {
+                isRole = false
+            }
+            if stream && response_string != "" {
+                _, err = c.Writer.WriteString(response_string)
+                if err != nil {
+                    return "", nil
+                }
+            }
+            // Flush the response writer buffer to ensure that the client receives each line as it's written
+            c.Writer.Flush()
+
+            // More permissive finish reasons for o1-pro
+            if original_response.Message.Metadata.FinishDetails != nil {
+                if original_response.Message.Metadata.FinishDetails.Type == "max_tokens" ||
+                   (original_response.Message.Metadata.ModelSlug == "o1-pro" &&
+                    (original_response.Message.Metadata.FinishDetails.Type == "interrupted" ||
+                     original_response.Message.Metadata.FinishDetails.Type == "stop")) {
+                    max_tokens = true
+                }
+                finish_reason = original_response.Message.Metadata.FinishDetails.Type
+            }
+        } else {
+            if stream {
+                final_line := official_types.StopChunk(finish_reason)
+                c.Writer.WriteString("data: " + final_line.String() + "\n\n")
+            }
+        }
+    }
+
+    // Debug: Log the model and message structure if there's been a problem
+    if previous_text.Text == "" {
+        println("DEBUG OUTPUT: " + debugOutput.String())
+        println("No response text found. Model slug: " + original_response.Message.Metadata.ModelSlug)
+    }
+
+    respText := strings.Join(imgSource, "")
+    if respText != "" {
+        respText += "\n"
+    }
+    respText += previous_text.Text
+
+    // More aggressive continuation for o1-pro model
+    if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+        if len(respText) > 0 {
+            // Always continue for o1-pro if we got some text
+            return respText, &ContinueInfo{
+                ConversationID: original_response.ConversationID,
+                ParentID:       original_response.Message.ID,
+            }
+        }
+    }
+
+    if !max_tokens {
+        return respText, nil
+    }
+    return respText, &ContinueInfo{
+        ConversationID: original_response.ConversationID,
+        ParentID:       original_response.Message.ID,
+    }
 }
 
 func HandlerTTS(response *http.Response, input string) (string, string) {

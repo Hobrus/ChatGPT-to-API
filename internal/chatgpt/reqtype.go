@@ -61,7 +61,6 @@ type ChatGPTConvMode struct {
 	Kind    string `json:"kind"`
 	GizmoId string `json:"gizmo_id,omitempty"`
 }
-
 type ChatGPTRequest struct {
 	Action                     string            `json:"action"`
 	ConversationMode           ChatGPTConvMode   `json:"conversation_mode"`
@@ -69,7 +68,6 @@ type ChatGPTRequest struct {
 	ParentMessageID            string            `json:"parent_message_id,omitempty"`
 	ConversationID             string            `json:"conversation_id,omitempty"`
 	Model                      string            `json:"model"`
-	ModelSlug                  string            `json:"-"` // Not sent to API, used for internal tracking
 	HistoryAndTrainingDisabled bool              `json:"history_and_training_disabled"`
 	WebsocketRequestId         string            `json:"websocket_request_id"`
 	ForceSSE                   bool              `json:"force_use_sse"`
@@ -233,7 +231,6 @@ func NewChatGPTRequest() ChatGPTRequest {
 		Action:                     "next",
 		ParentMessageID:            uuid.NewString(),
 		Model:                      "text-davinci-002-render-sha",
-		ModelSlug:                  "", // Initialize the new field
 		HistoryAndTrainingDisabled: disable_history,
 		ConversationMode:           ChatGPTConvMode{Kind: "primary_assistant"},
 		WebsocketRequestId:         uuid.NewString(),

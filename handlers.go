@@ -1,18 +1,16 @@
 package main
 
 import (
-	"encoding/json"
-	"io"
 	chatgpt_request_converter "freechatgpt/conversion/requests/chatgpt"
 	chatgpt "freechatgpt/internal/chatgpt"
 	"freechatgpt/internal/tokens"
 	official_types "freechatgpt/typings/official"
 	"os"
 
-	http "github.com/bogdanfinn/fhttp"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
 var (
 	uuidNamespace = uuid.MustParse("12345678-1234-5678-1234-567812345678")
 )
@@ -160,13 +158,6 @@ func nightmare(c *gin.Context) {
 	// Convert the chat request to a ChatGPT request
 	translated_request := chatgpt_request_converter.ConvertAPIRequest(original_request, account, &secret, deviceId, proxy_url)
 
-	// Установка заголовков перед отправкой данных
-	if original_request.Stream {
-		c.Header("Content-Type", "text/event-stream")
-	} else {
-		c.Header("Content-Type", "application/json")
-	}
-
 	response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -175,49 +166,23 @@ func nightmare(c *gin.Context) {
 		return
 	}
 	defer response.Body.Close()
-
-	// Проверка ошибки в ответе без вызова Handle_request_error
-	if response.StatusCode != 200 {
-		// Читаем тело ответа
-		var error_response map[string]interface{}
-		err := json.NewDecoder(response.Body).Decode(&error_response)
-		if err != nil {
-			body, _ := io.ReadAll(response.Body)
-			c.JSON(500, gin.H{"error": gin.H{
-				"message": "Unknown error",
-				"type":    "internal_server_error",
-				"param":   nil,
-				"code":    "500",
-				"details": string(body),
-			}})
-			return
-		}
-		c.JSON(response.StatusCode, gin.H{"error": gin.H{
-			"message": error_response["detail"],
-			"type":    response.Status,
-			"param":   nil,
-			"code":    "error",
-		}})
+	if chatgpt.Handle_request_error(c, response) {
 		return
 	}
-
 	var full_response string
-	var responses []*http.Response
-	responses = append(responses, response)
-
-	// Чтение первого ответа
-	var continue_info *chatgpt.ContinueInfo
-	response_part, continue_info := chatgpt.Handler(c, response, &secret, proxy_url, deviceId, uid, original_request.Stream)
-	full_response += response_part
-
-	// Если нужно продолжение беседы
-	for i := 0; i < 2 && continue_info != nil; i++ { // максимум 2 дополнительных запроса
+	for i := 3; i > 0; i-- {
+		var continue_info *chatgpt.ContinueInfo
+		var response_part string
+		response_part, continue_info = chatgpt.Handler(c, response, &secret, proxy_url, deviceId, uid, original_request.Stream)
+		full_response += response_part
+		if continue_info == nil {
+			break
+		}
 		println("Continuing conversation")
 		translated_request.Messages = nil
 		translated_request.Action = "continue"
 		translated_request.ConversationID = continue_info.ConversationID
 		translated_request.ParentMessageID = continue_info.ParentID
-
 		chat_require, _ = chatgpt.CheckRequire(&secret, deviceId, proxy_url)
 		if chat_require.Proof.Required {
 			proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
@@ -225,39 +190,24 @@ func nightmare(c *gin.Context) {
 		if chat_require.Turnstile.Required {
 			turnstileToken = chatgpt.ProcessTurnstile(chat_require.Turnstile.DX, p)
 		}
-
-		next_response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
+		response, err = chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
 		if err != nil {
-			// Для stream мы уже начали отправку, просто завершаем
-			if !original_request.Stream {
-				c.JSON(500, gin.H{"error": "error sending continuation request"})
-			}
-			break
+			c.JSON(500, gin.H{
+				"error": "error sending request",
+			})
+			return
 		}
-
-		responses = append(responses, next_response)
-
-		// Проверка ошибки без установки статуса
-		if next_response.StatusCode != 200 {
-			next_response.Body.Close()
-			break
+		defer response.Body.Close()
+		if chatgpt.Handle_request_error(c, response) {
+			return
 		}
-
-		// Чтение следующей части ответа
-		response_part, continue_info = chatgpt.Handler(c, next_response, &secret, proxy_url, deviceId, uid, original_request.Stream)
-		full_response += response_part
 	}
-
-	// Закрываем все ответы кроме первого (который закрывается через defer)
-	for i := 1; i < len(responses); i++ {
-		responses[i].Body.Close()
+	if c.Writer.Status() != 200 {
+		return
 	}
-
-	// Финальный ответ для не-стримингового режима
 	if !original_request.Stream {
 		c.JSON(200, official_types.NewChatCompletion(full_response))
-	} else if original_request.Stream {
-		// Для стриминга отправляем завершающее сообщение
+	} else {
 		c.String(200, "data: [DONE]\n\n")
 	}
 }

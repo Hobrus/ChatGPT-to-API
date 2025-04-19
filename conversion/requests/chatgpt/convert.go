@@ -13,16 +13,25 @@ var gptsRegexp = regexp.MustCompile(`-gizmo-g-(\w+)`)
 func ConvertAPIRequest(api_request official_types.APIRequest, account string, secret *tokens.Secret, deviceId string, proxy string) chatgpt_types.ChatGPTRequest {
     chatgpt_request := chatgpt_types.NewChatGPTRequest()
 
+    // Передача action, conversation_id и parent_message_id, если они указаны
+    if api_request.Action != "" {
+        chatgpt_request.Action = api_request.Action
+    }
+    if api_request.ConversationID != "" {
+        chatgpt_request.ConversationID = api_request.ConversationID
+    }
+    if api_request.ParentMessageID != "" {
+        chatgpt_request.ParentMessageID = api_request.ParentMessageID
+    }
+
     if strings.HasPrefix(api_request.Model, "gpt-4o-mini") || strings.HasPrefix(api_request.Model, "gpt-3.5") {
         chatgpt_request.Model = "gpt-4o-mini"
     } else if strings.HasPrefix(api_request.Model, "gpt-4o") {
         chatgpt_request.Model = "gpt-4o"
     } else if strings.HasPrefix(api_request.Model, "gpt-4") {
         chatgpt_request.Model = "gpt-4"
-    // >>> Новый блок <<<
     } else if strings.HasPrefix(api_request.Model, "o1-pro") {
         chatgpt_request.Model = "o1-pro"
-    // >>> конец вставки <<<
     } else if strings.HasPrefix(api_request.Model, "o1-mini") {
         chatgpt_request.Model = "o1-mini"
     } else if strings.HasPrefix(api_request.Model, "o1") {
@@ -31,26 +40,26 @@ func ConvertAPIRequest(api_request official_types.APIRequest, account string, se
         chatgpt_request.Model = "o3"
     }
 
-    // Ниже может идти проверка на gizmo...
-    // (если она вам нужна, оставляете как есть)
+    // Проверка на gizmo
     matches := gptsRegexp.FindStringSubmatch(api_request.Model)
     if len(matches) == 2 {
         chatgpt_request.ConversationMode.Kind = "gizmo_interaction"
         chatgpt_request.ConversationMode.GizmoId = "g-" + matches[1]
     }
 
-    // Если у вас PLUS аккаунт, то проверка на secret.TeamUserID
-    // идёт при отправке. Здесь важна именно модель.
-
-    // Пробегаемся по всем сообщением user/system
-    // и добавляем в ChatGPTRequest
-    ifMultimodel := secret.Token != ""
-    for _, api_message := range api_request.Messages {
-        if api_message.Role == "system" {
-            api_message.Role = "critic"
+    // Пропускаем добавление сообщений для режима continue
+    if api_request.Action != "continue" {
+        // Пробегаемся по всем сообщением user/system
+        // и добавляем в ChatGPTRequest
+        ifMultimodel := secret.Token != ""
+        for _, api_message := range api_request.Messages {
+            if api_message.Role == "system" {
+                api_message.Role = "critic"
+            }
+            chatgpt_request.AddMessage(api_message.Role, api_message.Content, ifMultimodel, account, secret, deviceId, proxy)
         }
-        chatgpt_request.AddMessage(api_message.Role, api_message.Content, ifMultimodel, account, secret, deviceId, proxy)
     }
+    
     return chatgpt_request
 }
 

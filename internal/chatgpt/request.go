@@ -10,6 +10,7 @@ import (
 	"freechatgpt/typings"
 	chatgpt_types "freechatgpt/typings/chatgpt"
 	"io"
+	"fmt"
 	"math"
 	"math/rand"
 	"mime/multipart"
@@ -401,6 +402,8 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
 	var convId string
 	var msgId string
 
+	var debugOutput strings.Builder
+
 	for {
 		var line string
 		var err error
@@ -411,6 +414,10 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
 			}
 			return "", nil
 		}
+
+		// Debug output
+		debugOutput.WriteString("Line: " + line + "\n")
+
 		if len(line) < 6 {
 			continue
 		}
@@ -422,41 +429,87 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
 			original_response.Message.ID = ""
 			err = json.Unmarshal([]byte(line), &original_response)
 			if err != nil {
+				debugOutput.WriteString("JSON error: " + err.Error() + "\n")
 				continue
 			}
 			if original_response.Error != nil {
+				debugOutput.WriteString("Response error: " + fmt.Sprintf("%v", original_response.Error) + "\n")
 				c.JSON(500, gin.H{"error": original_response.Error})
 				return "", nil
 			}
 			if original_response.Message.ID == "" {
 				continue
 			}
+
+			// More lenient handling of conversation ID for o1-pro model
 			if original_response.ConversationID != convId {
 				if convId == "" {
 					convId = original_response.ConversationID
 				} else {
+					// For o1-pro, allow multiple conversation IDs
+					if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+						// Accept the new conversation ID
+						convId = original_response.ConversationID
+					} else {
+						continue
+					}
+				}
+			}
+
+			// More lenient role checking for o1-pro
+			validRole := original_response.Message.Author.Role == "assistant" ||
+						 (original_response.Message.Author.Role == "tool" && original_response.Message.Content.ContentType != "text")
+
+			if !validRole || original_response.Message.Content.Parts == nil {
+				// Special case for o1-pro model: it might use different roles
+				if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+					// Accept this message even with an unexpected role
+				} else {
 					continue
 				}
 			}
-			if !(original_response.Message.Author.Role == "assistant" || (original_response.Message.Author.Role == "tool" && original_response.Message.Content.ContentType != "text")) || original_response.Message.Content.Parts == nil {
-				continue
-			}
+
+			// Metadata checks
 			if original_response.Message.Metadata.MessageType == "" || original_response.Message.Recipient != "all" {
-				continue
+				// For o1-pro, be more permissive with metadata
+				if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+					// Accept this message even with missing or different metadata
+				} else {
+					continue
+				}
 			}
-			if original_response.Message.Metadata.MessageType != "next" && original_response.Message.Metadata.MessageType != "continue" || !strings.HasSuffix(original_response.Message.Content.ContentType, "text") {
-				continue
+
+			// Content type checking
+			validMessageType := original_response.Message.Metadata.MessageType == "next" ||
+							   original_response.Message.Metadata.MessageType == "continue"
+
+			validContentType := strings.HasSuffix(original_response.Message.Content.ContentType, "text")
+
+			if !validMessageType || !validContentType {
+				// For o1-pro, be more permissive with message and content types
+				if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+					// Accept this message even with different message/content types
+				} else {
+					continue
+				}
 			}
+
+			// Message ID checking
 			if original_response.Message.Content.ContentType == "text" && original_response.Message.ID != msgId {
-				if msgId == "" && original_response.Message.Content.Parts[0].(string) == "" {
+				// More permissive for o1-pro model
+				if msgId == "" || original_response.Message.Metadata.ModelSlug == "o1-pro" {
+					msgId = original_response.Message.ID
+				} else if original_response.Message.Content.Parts[0].(string) == "" {
 					msgId = original_response.Message.ID
 				} else {
 					continue
 				}
 			}
+
 			if original_response.Message.EndTurn != nil && !original_response.Message.EndTurn.(bool) {
 				msgId = ""
 			}
+
 			if len(original_response.Message.Metadata.Citations) != 0 {
 				r := []rune(original_response.Message.Content.Parts[0].(string))
 				offset := 0
@@ -518,8 +571,12 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
 			// Flush the response writer buffer to ensure that the client receives each line as it's written
 			c.Writer.Flush()
 
+			// More permissive finish reasons for o1-pro
 			if original_response.Message.Metadata.FinishDetails != nil {
-				if original_response.Message.Metadata.FinishDetails.Type == "max_tokens" {
+				if original_response.Message.Metadata.FinishDetails.Type == "max_tokens" ||
+				   (original_response.Message.Metadata.ModelSlug == "o1-pro" &&
+				    (original_response.Message.Metadata.FinishDetails.Type == "interrupted" ||
+				     original_response.Message.Metadata.FinishDetails.Type == "stop")) {
 					max_tokens = true
 				}
 				finish_reason = original_response.Message.Metadata.FinishDetails.Type
@@ -531,11 +588,30 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
 			}
 		}
 	}
+
+	// Debug: Log the model and message structure if there's been a problem
+	if previous_text.Text == "" {
+		println("DEBUG OUTPUT: " + debugOutput.String())
+		println("No response text found. Model slug: " + original_response.Message.Metadata.ModelSlug)
+	}
+
 	respText := strings.Join(imgSource, "")
 	if respText != "" {
 		respText += "\n"
 	}
 	respText += previous_text.Text
+
+	// More aggressive continuation for o1-pro model
+	if original_response.Message.Metadata.ModelSlug == "o1-pro" {
+		if len(respText) > 0 {
+			// Always continue for o1-pro if we got some text
+			return respText, &ContinueInfo{
+				ConversationID: original_response.ConversationID,
+				ParentID:       original_response.Message.ID,
+			}
+		}
+	}
+
 	if !max_tokens {
 		return respText, nil
 	}

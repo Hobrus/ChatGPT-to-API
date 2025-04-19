@@ -13,6 +13,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Объявляем глобальные переменные
 var HOST string
 var PORT string
 var ACCESS_TOKENS tokens.AccessToken
@@ -27,7 +28,6 @@ func checkProxy() {
 		defer file.Close()
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			// Split line by :
 			proxy := scanner.Text()
 			proxy_parts := strings.Split(proxy, ":")
 			if len(proxy_parts) > 1 {
@@ -61,32 +61,49 @@ func init() {
 	readAccounts()
 	scheduleTokenPUID()
 }
+
 func main() {
+	// Сохраняем хэш-файлы при завершении
 	defer chatgpt_types.SaveFileHash()
+
+	// Инициализируем Gin
 	router := gin.Default()
 
+	// Подключаем наши middleware:
+	// 1) requestResponseLogger - чтобы логировать запрос/ответ
+	// 2) cors - ваше уже существующее middleware
+	router.Use(requestResponseLogger)
 	router.Use(cors)
 
+	// Роут для тестирования
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "pong",
 		})
 	})
 
+	// Группа админских роутов
 	admin_routes := router.Group("/admin")
 	admin_routes.Use(adminCheck)
+	{
+		admin_routes.PATCH("/password", passwordHandler)
+		admin_routes.PATCH("/tokens", tokensHandler)
+	}
 
-	/// Admin routes
-	admin_routes.PATCH("/password", passwordHandler)
-	admin_routes.PATCH("/tokens", tokensHandler)
-	/// Public routes
+	// Публичные роуты
 	router.OPTIONS("/v1/chat/completions", optionsHandler)
 	router.POST("/v1/chat/completions", Authorization, nightmare)
+
 	router.OPTIONS("/v1/audio/speech", optionsHandler)
 	router.POST("/v1/audio/speech", Authorization, tts)
+
 	router.OPTIONS("/v1/audio/transcriptions", optionsHandler)
 	router.POST("/v1/audio/transcriptions", Authorization, stt)
+
 	router.OPTIONS("/v1/models", optionsHandler)
 	router.GET("/v1/models", Authorization, simulateModel)
+
+	// Запускаем сервер
 	endless.ListenAndServe(HOST+":"+PORT, router)
 }
+

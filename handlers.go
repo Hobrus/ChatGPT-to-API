@@ -56,48 +56,57 @@ func optionsHandler(c *gin.Context) {
 }
 
 func simulateModel(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"object": "list",
-		"data": []gin.H{
-			{
-				"id":       "gpt-3.5-turbo",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-			{
-				"id":       "gpt-4",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-			{
-				"id":       "gpt-4o",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-			{
-				"id":       "gpt-4o-mini",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-			{
-				"id":       "o1",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-			{
-				"id":       "o1-mini",
-				"object":   "model",
-				"created":  1688888888,
-				"owned_by": "chatgpt-to-api",
-			},
-		},
-	})
+    c.JSON(200, gin.H{
+        "object": "list",
+        "data": []gin.H{
+            {
+                "id":       "gpt-3.5-turbo",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "gpt-4",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "gpt-4o",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "gpt-4o-mini",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "o1",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "o1-mini",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+
+            // >>> Добавляем новую модель <<<
+            {
+                "id":       "o1-pro",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+        },
+    })
 }
+
 
 func generateUUID(name string) string {
 	return uuid.NewSHA1(uuidNamespace, []byte(name)).String()

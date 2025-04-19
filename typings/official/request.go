@@ -1,16 +1,9 @@
 package official
 
 type APIRequest struct {
-	Messages            []api_message `json:"messages"`
-	Stream              bool          `json:"stream"`
-	Model               string        `json:"model"`
-	Action              string        `json:"action,omitempty"`
-	ConversationID      string        `json:"conversation_id,omitempty"`
-	ParentMessageID     string        `json:"parent_message_id,omitempty"`
-	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
-	Prompt              string        `json:"prompt,omitempty"`     // For continue.dev
-	Stop                []string      `json:"stop,omitempty"`       // Stop words for continue.dev
-	Temperature         float64       `json:"temperature,omitempty"` // Temperature for continue.dev
+	Messages []api_message `json:"messages"`
+	Stream   bool          `json:"stream"`
+	Model    string        `json:"model"`
 }
 
 type api_message struct {

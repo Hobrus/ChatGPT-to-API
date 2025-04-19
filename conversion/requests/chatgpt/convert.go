@@ -9,6 +9,9 @@ import (
 )
 
 var gptsRegexp = regexp.MustCompile(`-gizmo-g-(\w+)`)
+var imStartRegexp = regexp.MustCompile(`<\|im_start\|>user\s*(.*?)(?:<\|im_end\|>|$)`)
+var fimPrefixRegexp = regexp.MustCompile(`<fim_prefix>(.*?)<fim_suffix>`)
+var startEditingRegexp = regexp.MustCompile(`<START EDITING HERE>\s*(.*?)<STOP EDITING HERE>`)
 
 func ConvertAPIRequest(api_request official_types.APIRequest, account string, secret *tokens.Secret, deviceId string, proxy string) chatgpt_types.ChatGPTRequest {
     chatgpt_request := chatgpt_types.NewChatGPTRequest()
@@ -49,10 +52,49 @@ func ConvertAPIRequest(api_request official_types.APIRequest, account string, se
 
     // Обработка для continue.dev с prompt вместо messages
     if api_request.Prompt != "" {
-        // Создаем сообщение от пользователя с prompt
-        if api_request.Action != "continue" {
-            ifMultimodel := secret.Token != ""
-            chatgpt_request.AddMessage("user", api_request.Prompt, ifMultimodel, account, secret, deviceId, proxy)
+        // Check for Anthropic Claude format: <|im_start|>user ... <|im_end|>
+        imStartMatches := imStartRegexp.FindStringSubmatch(api_request.Prompt)
+        if len(imStartMatches) > 1 {
+            // Создаем сообщение от пользователя с prompt из Claude формата
+            if api_request.Action != "continue" {
+                ifMultimodel := secret.Token != ""
+                chatgpt_request.AddMessage("user", imStartMatches[1], ifMultimodel, account, secret, deviceId, proxy)
+            }
+        } else if strings.Contains(api_request.Prompt, "<fim_prefix>") && strings.Contains(api_request.Prompt, "<fim_suffix>") {
+            // Handle FIM (Fill In Middle) format from Continue.dev
+            if api_request.Action != "continue" {
+                // Extract content between fim_prefix and fim_suffix and use as prompt
+                fimMatch := fimPrefixRegexp.FindStringSubmatch(api_request.Prompt)
+                if len(fimMatch) > 1 {
+                    ifMultimodel := secret.Token != ""
+                    chatgpt_request.AddMessage("user", fimMatch[1], ifMultimodel, account, secret, deviceId, proxy)
+                } else {
+                    // Fallback to using the whole prompt
+                    ifMultimodel := secret.Token != ""
+                    chatgpt_request.AddMessage("user", api_request.Prompt, ifMultimodel, account, secret, deviceId, proxy)
+                }
+            }
+        } else if strings.Contains(api_request.Prompt, "<START EDITING HERE>") && strings.Contains(api_request.Prompt, "<STOP EDITING HERE>") {
+            // Handle editing format
+            if api_request.Action != "continue" {
+                editMatch := startEditingRegexp.FindStringSubmatch(api_request.Prompt)
+                if len(editMatch) > 1 {
+                    // Extract the content between START EDITING HERE and STOP EDITING HERE
+                    ifMultimodel := secret.Token != ""
+                    // Use the whole prompt as context is important
+                    chatgpt_request.AddMessage("user", api_request.Prompt, ifMultimodel, account, secret, deviceId, proxy)
+                } else {
+                    // Fallback to using the whole prompt
+                    ifMultimodel := secret.Token != ""
+                    chatgpt_request.AddMessage("user", api_request.Prompt, ifMultimodel, account, secret, deviceId, proxy)
+                }
+            }
+        } else {
+            // Standard prompt handling
+            if api_request.Action != "continue" {
+                ifMultimodel := secret.Token != ""
+                chatgpt_request.AddMessage("user", api_request.Prompt, ifMultimodel, account, secret, deviceId, proxy)
+            }
         }
     } else {
         // Пропускаем добавление сообщений для режима continue
@@ -71,7 +113,6 @@ func ConvertAPIRequest(api_request official_types.APIRequest, account string, se
 
     return chatgpt_request
 }
-
 
 func ConvertTTSAPIRequest(input string) chatgpt_types.ChatGPTRequest {
 	chatgpt_request := chatgpt_types.NewChatGPTRequest()

@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	chatgpt_request_converter "freechatgpt/conversion/requests/chatgpt"
 	chatgpt "freechatgpt/internal/chatgpt"
 	"freechatgpt/internal/tokens"
 	official_types "freechatgpt/typings/official"
 	"os"
+	"strings"
 
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/gin-gonic/gin"
@@ -101,6 +103,12 @@ func simulateModel(c *gin.Context) {
             "created":  1688888888,
             "owned_by": "chatgpt-to-api",
         },
+        {
+            "id":       "claude-3-opus-20240229",
+            "object":   "model",
+            "created":  1688888888,
+            "owned_by": "chatgpt-to-api",
+        },
     }
 
     c.JSON(200, gin.H{
@@ -109,10 +117,10 @@ func simulateModel(c *gin.Context) {
     })
 }
 
-
 func generateUUID(name string) string {
 	return uuid.NewSHA1(uuidNamespace, []byte(name)).String()
 }
+
 func nightmare(c *gin.Context) {
 	var original_request official_types.APIRequest
 	err := c.BindJSON(&original_request)
@@ -124,6 +132,15 @@ func nightmare(c *gin.Context) {
 			"code":    err.Error(),
 		}})
 		return
+	}
+
+	// Log the request details
+	fmt.Printf("Processing request: model=%s, stream=%v, action=%s\n",
+		original_request.Model, original_request.Stream, original_request.Action)
+	if original_request.Prompt != "" {
+		fmt.Printf("Request has prompt of length: %d\n", len(original_request.Prompt))
+	} else if len(original_request.Messages) > 0 {
+		fmt.Printf("Request has %d messages\n", len(original_request.Messages))
 	}
 
 	account, secret := getSecret()
@@ -160,13 +177,29 @@ func nightmare(c *gin.Context) {
 	// Convert the chat request to a ChatGPT request
 	translated_request := chatgpt_request_converter.ConvertAPIRequest(original_request, account, &secret, deviceId, proxy_url)
 
-	// Установка заголовков перед отправкой данных
+	// Set response headers
 	if original_request.Stream {
 		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("Transfer-Encoding", "chunked")
 	} else {
 		c.Header("Content-Type", "application/json")
 	}
 
+	// Special handling for Continue.dev and similar clients
+	var isContinueDev bool = false
+
+	// Check if this is a request from Continue.dev based on prompt format
+	if original_request.Prompt != "" &&
+	   (strings.Contains(original_request.Prompt, "<fim_prefix>") ||
+		strings.Contains(original_request.Prompt, "<|im_start|>") ||
+		strings.Contains(original_request.Prompt, "<START EDITING HERE>")) {
+		isContinueDev = true
+		fmt.Println("Detected Continue.dev or similar client request")
+	}
+
+	// Make the initial request
 	response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -176,9 +209,9 @@ func nightmare(c *gin.Context) {
 	}
 	defer response.Body.Close()
 
-	// Проверка ошибки в ответе без вызова Handle_request_error
+	// Check response error
 	if response.StatusCode != 200 {
-		// Читаем тело ответа
+		// Read response body
 		var error_response map[string]interface{}
 		err := json.NewDecoder(response.Body).Decode(&error_response)
 		if err != nil {
@@ -205,20 +238,33 @@ func nightmare(c *gin.Context) {
 	var responses []*http.Response
 	responses = append(responses, response)
 
-	// Чтение первого ответа
+	// Handle the response
 	var continue_info *chatgpt.ContinueInfo
 	response_part, continue_info := chatgpt.Handler(c, response, &secret, proxy_url, deviceId, uid, original_request.Stream)
 	full_response += response_part
 
-	// Если нужно продолжение беседы
-	for i := 0; i < 5 && continue_info != nil; i++ { // увеличиваем до 5 для o1-pro
-		println("Continuing conversation")
+	// Process continuations
+	max_continuations := 5
+	if original_request.Model == "o1-pro" || isContinueDev {
+		max_continuations = 10  // More continuations for o1-pro and Continue.dev
+	}
+
+	// For Continue.dev, we don't want to send [DONE] until we've processed all continuations
+	var continueDevStreamDone bool = false
+
+	// Process continuations if needed
+	for i := 0; i < max_continuations && continue_info != nil; i++ {
+		fmt.Printf("Continuing conversation (iteration %d)\n", i+1)
 		translated_request.Messages = nil
 		translated_request.Action = "continue"
 		translated_request.ConversationID = continue_info.ConversationID
 		translated_request.ParentMessageID = continue_info.ParentID
 
 		chat_require, _ = chatgpt.CheckRequire(&secret, deviceId, proxy_url)
+		if chat_require == nil {
+			// If we can't check requirements, just stop continuation
+			break
+		}
 		if chat_require.Proof.Required {
 			proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
 		}
@@ -228,37 +274,55 @@ func nightmare(c *gin.Context) {
 
 		next_response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
 		if err != nil {
-			// Для stream мы уже начали отправку, просто завершаем
-			if !original_request.Stream {
-				c.JSON(500, gin.H{"error": "error sending continuation request"})
+			// For stream we've already started sending, so we just mark as done
+			if original_request.Stream && !continueDevStreamDone {
+				if isContinueDev {
+					continueDevStreamDone = true
+				}
+				c.Writer.WriteString("data: [DONE]\n\n")
+				c.Writer.Flush()
+			} else if !original_request.Stream {
+				// For non-stream, we can still return what we got so far
+				c.JSON(200, official_types.NewChatCompletion(full_response))
 			}
 			break
 		}
 
 		responses = append(responses, next_response)
 
-		// Проверка ошибки без установки статуса
+		// Check for errors
 		if next_response.StatusCode != 200 {
 			next_response.Body.Close()
 			break
 		}
 
-		// Чтение следующей части ответа
-		response_part, continue_info = chatgpt.Handler(c, next_response, &secret, proxy_url, deviceId, uid, original_request.Stream)
-		full_response += response_part
+		// Handle the continuation response
+		part_response, continue_info := chatgpt.Handler(c, next_response, &secret, proxy_url, deviceId, uid, original_request.Stream)
+		full_response += part_response
+
+		// For Continue.dev, force another continuation if response is too short
+		if isContinueDev && len(part_response) < 100 && continue_info == nil && i < 2 {
+			// Force another continuation for potentially incomplete responses
+			continue_info = &chatgpt.ContinueInfo{
+				ConversationID: translated_request.ConversationID,
+				ParentID:       translated_request.ParentMessageID,
+			}
+		}
 	}
 
-	// Закрываем все ответы кроме первого (который закрывается через defer)
+	// Close response bodies except the first (which is closed with defer)
 	for i := 1; i < len(responses); i++ {
 		responses[i].Body.Close()
 	}
 
-	// Финальный ответ для не-стримингового режима
+	// Send final response
 	if !original_request.Stream {
+		// For non-streaming, return the full response
 		c.JSON(200, official_types.NewChatCompletion(full_response))
-	} else if original_request.Stream {
-		// Для стриминга отправляем завершающее сообщение
-		c.String(200, "data: [DONE]\n\n")
+	} else if original_request.Stream && !continueDevStreamDone {
+		// For streaming, send the DONE message if not already sent
+		c.Writer.WriteString("data: [DONE]\n\n")
+		c.Writer.Flush()
 	}
 }
 

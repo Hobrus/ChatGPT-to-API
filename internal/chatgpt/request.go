@@ -380,6 +380,9 @@ func GetImageSource(wg *sync.WaitGroup, url string, prompt string, secret *token
 	// }
 }
 
+// This is a partial update of the Handler function in the internal/chatgpt/request.go file
+// You'll need to find and replace this function in your file
+
 func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, proxy string, deviceId string, uuid string, stream bool) (string, *ContinueInfo) {
     max_tokens := false
 
@@ -390,11 +393,13 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
     if stream {
         // Response content type is text/event-stream
         c.Header("Content-Type", "text/event-stream")
+        c.Header("Cache-Control", "no-cache")
+        c.Header("Connection", "keep-alive")
     } else {
         // Response content type is application/json
         c.Header("Content-Type", "application/json")
     }
-    var finish_reason string
+    // var finish_reason string
     var previous_text typings.StringStruct
     var original_response chatgpt_types.ChatGPTResponse
     var isRole = true
@@ -422,7 +427,12 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
             continue
         }
         // Remove "data: " from the beginning of the line
-        line = line[6:]
+        if strings.HasPrefix(line, "data: ") {
+            line = line[6:]
+        } else {
+            continue // Skip lines that don't start with "data: "
+        }
+
         // Check if line starts with [DONE]
         if !strings.HasPrefix(line, "[DONE]") {
             // Parse the line as JSON
@@ -563,13 +573,20 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
                 isRole = false
             }
             if stream && response_string != "" {
+                // Add safety check for closed connection
+                if c.Writer == nil {
+                    return previous_text.Text, nil
+                }
+
                 _, err = c.Writer.WriteString(response_string)
                 if err != nil {
-                    return "", nil
+                    // Connection probably closed
+                    fmt.Println("Error writing to response: ", err.Error())
+                    return previous_text.Text, nil
                 }
+                // Flush to ensure client receives data immediately
+                c.Writer.Flush()
             }
-            // Flush the response writer buffer to ensure that the client receives each line as it's written
-            c.Writer.Flush()
 
             // More permissive finish reasons for o1-pro
             if original_response.Message.Metadata.FinishDetails != nil {
@@ -579,20 +596,21 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
                      original_response.Message.Metadata.FinishDetails.Type == "stop")) {
                     max_tokens = true
                 }
-                finish_reason = original_response.Message.Metadata.FinishDetails.Type
+                // finish_reason = original_response.Message.Metadata.FinishDetails.Type
             }
         } else {
             if stream {
-                final_line := official_types.StopChunk(finish_reason)
-                c.Writer.WriteString("data: " + final_line.String() + "\n\n")
+                // final_line := official_types.StopChunk(finish_reason)
+                // We'll let the handler decide when to send [DONE]
+                // instead of doing it here
             }
         }
     }
 
     // Debug: Log the model and message structure if there's been a problem
     if previous_text.Text == "" {
-        println("DEBUG OUTPUT: " + debugOutput.String())
-        println("No response text found. Model slug: " + original_response.Message.Metadata.ModelSlug)
+        fmt.Println("DEBUG OUTPUT: " + debugOutput.String())
+        fmt.Println("No response text found. Model slug: " + original_response.Message.Metadata.ModelSlug)
     }
 
     respText := strings.Join(imgSource, "")
@@ -601,10 +619,21 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
     }
     respText += previous_text.Text
 
+    // Check if there's actual content
+    if len(respText) == 0 {
+        fmt.Println("Empty response received - requesting continuation")
+        // Force continuation for empty responses
+        return respText, &ContinueInfo{
+            ConversationID: original_response.ConversationID,
+            ParentID:       original_response.Message.ID,
+        }
+    }
+
     // More aggressive continuation for o1-pro model
     if original_response.Message.Metadata.ModelSlug == "o1-pro" {
-        if len(respText) > 0 {
-            // Always continue for o1-pro if we got some text
+        // Always try to continue for o1-pro if the response seems short
+        if len(respText) < 500 || !strings.Contains(respText, ".") {
+            fmt.Println("Short o1-pro response - requesting continuation")
             return respText, &ContinueInfo{
                 ConversationID: original_response.ConversationID,
                 ParentID:       original_response.Message.ID,
@@ -615,6 +644,8 @@ func Handler(c *gin.Context, response *http.Response, secret *tokens.Secret, pro
     if !max_tokens {
         return respText, nil
     }
+
+    fmt.Println("Max tokens reached - requesting continuation")
     return respText, &ContinueInfo{
         ConversationID: original_response.ConversationID,
         ParentID:       original_response.Message.ID,

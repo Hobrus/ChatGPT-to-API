@@ -15,6 +15,133 @@ var (
 	uuidNamespace = uuid.MustParse("12345678-1234-5678-1234-567812345678")
 )
 
+// Model structure for the /api/v0/models endpoint
+type ModelV0 struct {
+	ID                string `json:"id"`
+	Object            string `json:"object"`
+	Type              string `json:"type"`
+	Publisher         string `json:"publisher"`
+	Arch              string `json:"arch"`
+	CompatibilityType string `json:"compatibility_type"`
+	Quantization      string `json:"quantization"`
+	State             string `json:"state"`
+	MaxContextLength  int    `json:"max_context_length"`
+}
+
+// Model data store
+var modelsV0 = []ModelV0{
+	{
+		ID:                "gpt-4o-mini",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "openai",
+		Arch:              "gpt",
+		CompatibilityType: "openai",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "gpt-4o",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "openai",
+		Arch:              "gpt",
+		CompatibilityType: "openai",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "gpt-4",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "openai",
+		Arch:              "gpt",
+		CompatibilityType: "openai",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "o1-pro",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "anthropic",
+		Arch:              "claude",
+		CompatibilityType: "anthropic",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "o1-mini",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "anthropic",
+		Arch:              "claude",
+		CompatibilityType: "anthropic",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "o1",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "anthropic",
+		Arch:              "claude",
+		CompatibilityType: "anthropic",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "o3",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "anthropic",
+		Arch:              "claude",
+		CompatibilityType: "anthropic",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+	{
+		ID:                "o4-mini-high",
+		Object:            "model",
+		Type:              "llm",
+		Publisher:         "anthropic",
+		Arch:              "claude",
+		CompatibilityType: "anthropic",
+		Quantization:      "none",
+		State:             "loaded",
+		MaxContextLength:  128000,
+	},
+}
+
+// Handler for /api/v0/models
+func getModelsV0(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"object": "list",
+		"data":   modelsV0,
+	})
+}
+
+// Handler for /api/v0/models/:model
+func getModelV0(c *gin.Context) {
+	modelID := c.Param("model")
+
+	for _, model := range modelsV0 {
+		if model.ID == modelID {
+			c.JSON(200, model)
+			return
+		}
+	}
+
+	c.JSON(404, gin.H{"error": "Model not found"})
+}
+
 func passwordHandler(c *gin.Context) {
 	// Get the password from the request (json) and update the password
 	type password_struct struct {
@@ -95,10 +222,20 @@ func simulateModel(c *gin.Context) {
                 "created":  1688888888,
                 "owned_by": "chatgpt-to-api",
             },
-
-            // >>> Добавляем новую модель <<<
             {
                 "id":       "o1-pro",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "o3",
+                "object":   "model",
+                "created":  1688888888,
+                "owned_by": "chatgpt-to-api",
+            },
+            {
+                "id":       "o4-mini-high",
                 "object":   "model",
                 "created":  1688888888,
                 "owned_by": "chatgpt-to-api",

@@ -29,6 +29,8 @@ func ConvertAPIRequest(api_request official_types.APIRequest, account string, se
         chatgpt_request.Model = "o1"
     } else if strings.HasPrefix(api_request.Model, "o3") {
         chatgpt_request.Model = "o3"
+    } else if strings.HasPrefix(api_request.Model, "o4-mini-high") {
+        chatgpt_request.Model = "o4-mini-high"
     }
 
     // Ниже может идти проверка на gizmo...

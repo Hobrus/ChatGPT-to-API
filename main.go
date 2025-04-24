@@ -103,7 +103,13 @@ func main() {
 	router.OPTIONS("/v1/models", optionsHandler)
 	router.GET("/v1/models", Authorization, simulateModel)
 
+	router.OPTIONS("/api/v0/models", optionsHandler)
+	router.GET("/api/v0/models", Authorization, getModelsV0)
+
+	// New route for specific model lookup
+	router.OPTIONS("/api/v0/models/:model", optionsHandler)
+	router.GET("/api/v0/models/:model", Authorization, getModelV0)
+
 	// Запускаем сервер
 	endless.ListenAndServe(HOST+":"+PORT, router)
 }
-

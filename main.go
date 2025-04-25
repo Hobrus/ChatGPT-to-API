@@ -63,53 +63,58 @@ func init() {
 }
 
 func main() {
-	// Сохраняем хэш-файлы при завершении
-	defer chatgpt_types.SaveFileHash()
+    // Сохраняем хэш-файлы при завершении
+    defer chatgpt_types.SaveFileHash()
 
-	// Инициализируем Gin
-	router := gin.Default()
+    // Инициализируем Gin
+    router := gin.Default()
 
-	// Подключаем наши middleware:
-	// 1) requestResponseLogger - чтобы логировать запрос/ответ
-	// 2) cors - ваше уже существующее middleware
-	router.Use(requestResponseLogger)
-	router.Use(cors)
+    // Подключаем наши middleware:
+    router.Use(cors)
 
-	// Роут для тестирования
-	router.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"message": "pong",
-		})
-	})
+    // Добавляем новое debug middleware ПЕРЕД requestResponseLogger
+    router.Use(DebugRequest)
 
-	// Группа админских роутов
-	admin_routes := router.Group("/admin")
-	admin_routes.Use(adminCheck)
-	{
-		admin_routes.PATCH("/password", passwordHandler)
-		admin_routes.PATCH("/tokens", tokensHandler)
-	}
+    // Теперь логгер
+    router.Use(requestResponseLogger)
 
-	// Публичные роуты
-	router.OPTIONS("/v1/chat/completions", optionsHandler)
-	router.POST("/v1/chat/completions", Authorization, nightmare)
+    // Роут для тестирования
+    router.GET("/ping", func(c *gin.Context) {
+        c.JSON(200, gin.H{
+            "message": "pong",
+        })
+    })
 
-	router.OPTIONS("/v1/audio/speech", optionsHandler)
-	router.POST("/v1/audio/speech", Authorization, tts)
+    // Группа админских роутов
+    admin_routes := router.Group("/admin")
+    admin_routes.Use(adminCheck)
+    {
+        admin_routes.PATCH("/password", passwordHandler)
+        admin_routes.PATCH("/tokens", tokensHandler)
+    }
 
-	router.OPTIONS("/v1/audio/transcriptions", optionsHandler)
-	router.POST("/v1/audio/transcriptions", Authorization, stt)
+    // Публичные роуты
+    router.OPTIONS("/v1/chat/completions", optionsHandler)
 
-	router.OPTIONS("/v1/models", optionsHandler)
-	router.GET("/v1/models", Authorization, simulateModel)
+    // Используем специальный обработчик для Claude вместо nightmare
+    router.POST("/v1/chat/completions", Authorization, ClaudeHandler)
 
-	router.OPTIONS("/api/v0/models", optionsHandler)
-	router.GET("/api/v0/models", Authorization, getModelsV0)
+    router.OPTIONS("/v1/audio/speech", optionsHandler)
+    router.POST("/v1/audio/speech", Authorization, tts)
 
-	// New route for specific model lookup
-	router.OPTIONS("/api/v0/models/:model", optionsHandler)
-	router.GET("/api/v0/models/:model", Authorization, getModelV0)
+    router.OPTIONS("/v1/audio/transcriptions", optionsHandler)
+    router.POST("/v1/audio/transcriptions", Authorization, stt)
 
-	// Запускаем сервер
-	endless.ListenAndServe(HOST+":"+PORT, router)
+    router.OPTIONS("/v1/models", optionsHandler)
+    router.GET("/v1/models", Authorization, simulateModel)
+
+    router.OPTIONS("/api/v0/models", optionsHandler)
+    router.GET("/api/v0/models", Authorization, getModelsV0)
+
+    // New route for specific model lookup
+    router.OPTIONS("/api/v0/models/:model", optionsHandler)
+    router.GET("/api/v0/models/:model", Authorization, getModelV0)
+
+    // Запускаем сервер
+    endless.ListenAndServe(HOST+":"+PORT, router)
 }

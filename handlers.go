@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	chatgpt_request_converter "freechatgpt/conversion/requests/chatgpt"
 	chatgpt "freechatgpt/internal/chatgpt"
 	"freechatgpt/internal/tokens"
 	official_types "freechatgpt/typings/official"
+	"io"
+	"log"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -248,105 +253,140 @@ func simulateModel(c *gin.Context) {
 func generateUUID(name string) string {
 	return uuid.NewSHA1(uuidNamespace, []byte(name)).String()
 }
+
 func nightmare(c *gin.Context) {
-	var original_request official_types.APIRequest
-	err := c.BindJSON(&original_request)
-	if err != nil {
-		c.JSON(400, gin.H{"error": gin.H{
-			"message": "Request must be proper JSON",
-			"type":    "invalid_request_error",
-			"param":   nil,
-			"code":    err.Error(),
-		}})
-		return
-	}
+    // Read the raw request body for better debugging
+    jsonData, err := io.ReadAll(c.Request.Body)
+    if err != nil {
+        log.Printf("Error reading request body: %v", err)
+        c.JSON(400, gin.H{"error": gin.H{
+            "message": "Could not read request body",
+            "type":    "invalid_request_error",
+            "param":   nil,
+            "code":    err.Error(),
+        }})
+        return
+    }
 
-	account, secret := getSecret()
-	var proxy_url string
-	if len(proxies) == 0 {
-		proxy_url = ""
-	} else {
-		proxy_url = proxies[0]
-		// Push used proxy to the back of the list
-		proxies = append(proxies[1:], proxies[0])
-	}
-	uid := uuid.NewString()
-	var deviceId string
-	if account == "" {
-		deviceId = uid
-		chatgpt.SetOAICookie(deviceId)
-	} else {
-		deviceId = generateUUID(account)
-		chatgpt.SetOAICookie(deviceId)
-	}
-	chat_require, p := chatgpt.CheckRequire(&secret, deviceId, proxy_url)
-	if chat_require == nil {
-		c.JSON(500, gin.H{"error": "unable to check chat requirement"})
-		return
-	}
-	var proofToken string
-	if chat_require.Proof.Required {
-		proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
-	}
-	var turnstileToken string
-	if chat_require.Turnstile.Required {
-		turnstileToken = chatgpt.ProcessTurnstile(chat_require.Turnstile.DX, p)
-	}
-	// Convert the chat request to a ChatGPT request
-	translated_request := chatgpt_request_converter.ConvertAPIRequest(original_request, account, &secret, deviceId, proxy_url)
+    // Restore body for further processing
+    c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
 
-	response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
-	if err != nil {
-		c.JSON(500, gin.H{
-			"error": "error sending request",
-		})
-		return
-	}
-	defer response.Body.Close()
-	if chatgpt.Handle_request_error(c, response) {
-		return
-	}
-	var full_response string
-	for i := 3; i > 0; i-- {
-		var continue_info *chatgpt.ContinueInfo
-		var response_part string
-		response_part, continue_info = chatgpt.Handler(c, response, &secret, proxy_url, deviceId, uid, original_request.Stream)
-		full_response += response_part
-		if continue_info == nil {
-			break
-		}
-		println("Continuing conversation")
-		translated_request.Messages = nil
-		translated_request.Action = "continue"
-		translated_request.ConversationID = continue_info.ConversationID
-		translated_request.ParentMessageID = continue_info.ParentID
-		chat_require, _ = chatgpt.CheckRequire(&secret, deviceId, proxy_url)
-		if chat_require.Proof.Required {
-			proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
-		}
-		if chat_require.Turnstile.Required {
-			turnstileToken = chatgpt.ProcessTurnstile(chat_require.Turnstile.DX, p)
-		}
-		response, err = chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
-		if err != nil {
-			c.JSON(500, gin.H{
-				"error": "error sending request",
-			})
-			return
-		}
-		defer response.Body.Close()
-		if chatgpt.Handle_request_error(c, response) {
-			return
-		}
-	}
-	if c.Writer.Status() != 200 {
-		return
-	}
-	if !original_request.Stream {
-		c.JSON(200, official_types.NewChatCompletion(full_response))
-	} else {
-		c.String(200, "data: [DONE]\n\n")
-	}
+    // Log raw request for debugging
+    log.Printf("Raw JSON request: %s", string(jsonData))
+
+    // Manually parse the JSON to have more control
+    var original_request official_types.APIRequest
+    decoder := json.NewDecoder(bytes.NewBuffer(jsonData))
+    decoder.DisallowUnknownFields() // Строгая проверка полей
+
+    if err := decoder.Decode(&original_request); err != nil {
+        log.Printf("Error decoding JSON: %v", err)
+        c.JSON(400, gin.H{"error": gin.H{
+            "message": "Request must be proper JSON",
+            "type":    "invalid_request_error",
+            "param":   nil,
+            "code":    err.Error(),
+        }})
+        return
+    }
+
+    // Log the parsed request
+    log.Printf("Parsed request: %+v", original_request)
+
+    // Special handling for Claude models
+    if strings.HasPrefix(original_request.Model, "o1") ||
+       strings.HasPrefix(original_request.Model, "o3") ||
+       strings.HasPrefix(original_request.Model, "o4") {
+        log.Printf("Detected Claude model: %s", original_request.Model)
+    }
+
+    account, secret := getSecret()
+    var proxy_url string
+    if len(proxies) == 0 {
+        proxy_url = ""
+    } else {
+        proxy_url = proxies[0]
+        // Push used proxy to the back of the list
+        proxies = append(proxies[1:], proxies[0])
+    }
+    uid := uuid.NewString()
+    var deviceId string
+    if account == "" {
+        deviceId = uid
+        chatgpt.SetOAICookie(deviceId)
+    } else {
+        deviceId = generateUUID(account)
+        chatgpt.SetOAICookie(deviceId)
+    }
+    chat_require, p := chatgpt.CheckRequire(&secret, deviceId, proxy_url)
+    if chat_require == nil {
+        c.JSON(500, gin.H{"error": "unable to check chat requirement"})
+        return
+    }
+    var proofToken string
+    if chat_require.Proof.Required {
+        proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
+    }
+    var turnstileToken string
+    if chat_require.Turnstile.Required {
+        turnstileToken = chatgpt.ProcessTurnstile(chat_require.Turnstile.DX, p)
+    }
+    // Convert the chat request to a ChatGPT request
+    translated_request := chatgpt_request_converter.ConvertAPIRequest(original_request, account, &secret, deviceId, proxy_url)
+
+    response, err := chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
+    if err != nil {
+        log.Printf("Error sending request: %v", err)
+        c.JSON(500, gin.H{
+            "error": "error sending request",
+        })
+        return
+    }
+    defer response.Body.Close()
+    if chatgpt.Handle_request_error(c, response) {
+        return
+    }
+    var full_response string
+    for i := 3; i > 0; i-- {
+        var continue_info *chatgpt.ContinueInfo
+        var response_part string
+        response_part, continue_info = chatgpt.Handler(c, response, &secret, proxy_url, deviceId, uid, original_request.Stream)
+        full_response += response_part
+        if continue_info == nil {
+            break
+        }
+        println("Continuing conversation")
+        translated_request.Messages = nil
+        translated_request.Action = "continue"
+        translated_request.ConversationID = continue_info.ConversationID
+        translated_request.ParentMessageID = continue_info.ParentID
+        chat_require, _ = chatgpt.CheckRequire(&secret, deviceId, proxy_url)
+        if chat_require.Proof.Required {
+            proofToken = chatgpt.CalcProofToken(chat_require, proxy_url)
+        }
+        if chat_require.Turnstile.Required {
+            turnstileToken = chatgpt.ProcessTurnstile(chat_require.Turnstile.DX, p)
+        }
+        response, err = chatgpt.POSTconversation(translated_request, &secret, deviceId, chat_require.Token, proofToken, turnstileToken, proxy_url)
+        if err != nil {
+            c.JSON(500, gin.H{
+                "error": "error sending request",
+            })
+            return
+        }
+        defer response.Body.Close()
+        if chatgpt.Handle_request_error(c, response) {
+            return
+        }
+    }
+    if c.Writer.Status() != 200 {
+        return
+    }
+    if !original_request.Stream {
+        c.JSON(200, official_types.NewChatCompletion(full_response))
+    } else {
+        c.String(200, "data: [DONE]\n\n")
+    }
 }
 
 var ttsFmtMap = map[string]string{

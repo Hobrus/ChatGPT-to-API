@@ -8,7 +8,7 @@ import (
     "os"
     "strings"
     "time"
-
+    "encoding/json"
     gin "github.com/gin-gonic/gin"
 )
 
@@ -86,11 +86,25 @@ func requestResponseLogger(c *gin.Context) {
     // Восстанавливаем тело, чтобы Gin мог прочитать его повторно
     c.Request.Body = io.NopCloser(bytes.NewBuffer(reqBodyBytes))
 
-    // Логируем запрос
+    // Логируем запрос с правильной обработкой JSON
     log.Printf("---- REQUEST BEGIN ----")
     log.Printf("%s %s", c.Request.Method, c.Request.URL.String())
     log.Printf("HEADERS: %v", c.Request.Header)
-    log.Printf("BODY: %s", string(reqBodyBytes))
+
+    // Проверяем, есть ли Content-Type: application/json
+    contentType := c.Request.Header.Get("Content-Type")
+    if strings.Contains(contentType, "application/json") {
+        log.Printf("BODY: %s", string(reqBodyBytes))
+
+        // Проверка валидности JSON для диагностики
+        var js json.RawMessage
+        if err := json.Unmarshal(reqBodyBytes, &js); err != nil {
+            log.Printf("WARNING: Invalid JSON in request: %v", err)
+        }
+    } else {
+        log.Printf("BODY: %s", string(reqBodyBytes))
+    }
+
     log.Printf("---- REQUEST END ----")
 
     // 2) Создаём обёртку для записи ответа в буфер
